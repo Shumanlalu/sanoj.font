@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#10110d">
+  <title>Lost glyph — Sanoj Type Foundry</title>
+  <meta name="robots" content="noindex">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23d8ff3e'/%3E%3Ctext x='32' y='46' text-anchor='middle' font-family='Arial Black, sans-serif' font-size='38' fill='%2310110d'%3ES%3C/text%3E%3C/svg%3E">
+  <style>
+    :root {
+      --ink: #10110d;
+      --paper: #f2efe6;
+      --acid: #d8ff3e;
+      --coral: #ff6042;
+      --muted: #747469;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100svh;
+      display: grid;
+      place-items: center;
+      overflow: hidden;
+      padding: 1.5rem;
+      background:
+        radial-gradient(circle at 78% 22%, rgba(216, 255, 62, 0.18), transparent 24rem),
+        radial-gradient(circle at 10% 80%, rgba(255, 96, 66, 0.09), transparent 22rem),
+        var(--ink);
+      color: var(--paper);
+      font-family: "Space Grotesk", "Segoe UI", Arial, sans-serif;
+    }
+
+    .stage {
+      position: relative;
+      width: min(74rem, 100%);
+      min-height: min(38rem, 86svh);
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      gap: 3rem;
+      padding: clamp(1.4rem, 4vw, 3rem);
+      border: 1px solid rgba(242, 239, 230, 0.14);
+      border-radius: 1.4rem;
+      isolation: isolate;
+    }
+
+    .stage::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      z-index: -1;
+      background-image:
+        linear-gradient(rgba(242, 239, 230, 0.035) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(242, 239, 230, 0.035) 1px, transparent 1px);
+      background-size: 72px 72px;
+      mask-image: radial-gradient(circle at center, black, transparent 82%);
+    }
+
+    .top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+    }
+
+    .brand {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.65rem;
+      color: inherit;
+      font-size: 0.82rem;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-decoration: none;
+    }
+
+    .brand-mark {
+      display: grid;
+      place-items: center;
+      width: 2rem;
+      height: 2rem;
+      border-radius: 0.5rem;
+      background: var(--acid);
+      color: var(--ink);
+      font-family: "Syne", "Segoe UI", sans-serif;
+      font-weight: 800;
+      font-size: 1rem;
+    }
+
+    .tag {
+      font-family: "Space Mono", Consolas, monospace;
+      font-size: 0.56rem;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: rgba(242, 239, 230, 0.42);
+    }
+
+    .copy {
+      max-width: 50rem;
+    }
+
+    .eyebrow {
+      display: block;
+      margin-bottom: 1rem;
+      font-family: "Space Mono", Consolas, monospace;
+      font-size: 0.58rem;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--acid);
+    }
+
+    h1 {
+      margin: 0;
+      font-family: "Syne", "Segoe UI", Arial, sans-serif;
+      font-size: clamp(4.5rem, 17vw, 13rem);
+      font-weight: 800;
+      line-height: 0.78;
+      letter-spacing: -0.09em;
+    }
+
+    h1 em {
+      font-family: "DM Serif Display", Georgia, serif;
+      font-weight: 400;
+      color: var(--acid);
+    }
+
+    p {
+      max-width: 28rem;
+      margin: 1.7rem 0 0;
+      color: rgba(242, 239, 230, 0.52);
+      font-size: 0.95rem;
+      line-height: 1.65;
+    }
+
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.6rem;
+      margin-top: 2rem;
+    }
+
+    .button {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.6rem;
+      min-height: 2.9rem;
+      padding: 0.65rem 1.1rem;
+      border: 1px solid rgba(242, 239, 230, 0.22);
+      border-radius: 0.55rem;
+      color: var(--paper);
+      font-family: "Space Mono", Consolas, monospace;
+      font-size: 0.6rem;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-decoration: none;
+      text-transform: uppercase;
+      transition: background 0.2s ease, color 0.2s ease, border-color 0.2s ease;
+    }
+
+    .button:hover {
+      border-color: var(--paper);
+      background: var(--paper);
+      color: var(--ink);
+    }
+
+    .button--acid {
+      border-color: var(--acid);
+      background: var(--acid);
+      color: var(--ink);
+    }
+
+    .button--acid:hover {
+      border-color: var(--coral);
+      background: var(--coral);
+      color: var(--ink);
+    }
+
+    .foot {
+      display: flex;
+      justify-content: space-between;
+      gap: 1rem;
+      padding-top: 1rem;
+      border-top: 1px solid rgba(242, 239, 230, 0.12);
+      font-family: "Space Mono", Consolas, monospace;
+      font-size: 0.52rem;
+      letter-spacing: 0.07em;
+      text-transform: uppercase;
+      color: rgba(242, 239, 230, 0.3);
+    }
+
+    @media (max-width: 620px) {
+      .tag { display: none; }
+      .stage { gap: 2rem; }
+      .foot span:last-child { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <main class="stage">
+    <div class="top">
+      <a class="brand" href="/">
+        <span class="brand-mark">S</span>
+        <span>SANOJ<sup>®</sup></span>
+      </a>
+      <span class="tag">Error / 404</span>
+    </div>
+
+    <div class="copy">
+      <span class="eyebrow">This glyph is not in the collection</span>
+      <h1>Lost<br><em>glyph.</em></h1>
+      <p>The page you followed doesn’t live here. It may have moved, sold out, or simply never existed. The rest of the foundry is still very much open.</p>
+      <div class="actions">
+        <a class="button button--acid" href="/">Back to the foundry <span>↗</span></a>
+        <a class="button" href="/#typefaces">Browse typefaces</a>
+      </div>
+    </div>
+
+    <div class="foot">
+      <span>Sanoj Type Foundry / Ahmedabad, IN</span>
+      <span>Independent type practice</span>
+    </div>
+  </main>
+</body>
+</html>

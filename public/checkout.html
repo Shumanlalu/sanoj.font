@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f2efe6">
+  <title>Checkout — Sanoj Type Foundry</title>
+  <meta name="description" content="Complete your direct UPI payment for Sanoj Type Foundry typefaces.">
+  <meta name="robots" content="noindex,nofollow">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23d8ff3e'/%3E%3Ctext x='32' y='46' text-anchor='middle' font-family='Arial Black, sans-serif' font-size='38' fill='%2310110d'%3ES%3C/text%3E%3C/svg%3E">
+  <link rel="preload" href="assets/fonts/syne-var.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="assets/css/site.css">
+  <link rel="stylesheet" href="assets/css/checkout.css">
+</head>
+<body class="checkout-page">
+  <a class="skip-link" href="#checkoutRoot">Skip to checkout</a>
+  <div class="ambient-grain" aria-hidden="true"></div>
+
+  <header class="checkout-header">
+    <a class="brand" href="/" aria-label="Sanoj Type Foundry home">
+      <span class="brand-mark" aria-hidden="true">S</span>
+      <span class="brand-name">SANOJ<sup>®</sup></span>
+    </a>
+    <div class="checkout-header-right">
+      <span class="secure-note"><i></i> Direct UPI checkout</span>
+      <a class="back-to-site" href="/">Back to foundry <span>↗</span></a>
+    </div>
+  </header>
+
+  <main class="checkout-main" id="checkoutRoot">
+    <div class="checkout-progress" id="checkoutProgress" aria-label="Checkout progress">
+      <div class="progress-step is-complete" data-progress="bag">
+        <span class="progress-number">01</span>
+        <div><strong>Your bag</strong><small>Typefaces selected</small></div>
+      </div>
+      <span class="progress-line" aria-hidden="true"></span>
+      <div class="progress-step is-active" data-progress="payment">
+        <span class="progress-number">02</span>
+        <div><strong>UPI payment</strong><small>Scan · pay · verify</small></div>
+      </div>
+      <span class="progress-line" aria-hidden="true"></span>
+      <div class="progress-step" data-progress="files">
+        <span class="progress-number">03</span>
+        <div><strong>Your files</strong><small>Unlock after verification</small></div>
+      </div>
+    </div>
+
+    <div class="checkout-loading" id="checkoutLoading">
+      <div class="loading-copy">
+        <span class="mini-label">Loading secure order</span>
+        <h1>One moment.</h1>
+      </div>
+      <div class="loading-card">
+        <div class="loading-bar"></div>
+        <div class="loading-bar loading-bar--short"></div>
+        <div class="loading-block"></div>
+      </div>
+    </div>
+  </main>
+
+  <footer class="checkout-footer">
+    <span>© <span id="checkoutYear">2026</span> Sanoj Type Foundry</span>
+    <span>Need a hand? <a id="checkoutSupportEmail" href="mailto:hello@sanojtype.in">hello@sanojtype.in</a></span>
+    <a href="/admin/">Studio login ↗</a>
+  </footer>
+
+  <div class="toast-stack" id="toastStack" aria-live="polite" aria-atomic="false"></div>
+
+  <script src="assets/js/checkout.js" defer></script>
+</body>
+</html>

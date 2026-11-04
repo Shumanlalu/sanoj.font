@@ -1,0 +1,12 @@
+node_modules/
+.env
+
+# Local database, WAL files and the generated session secret
+data/
+
+# Uploaded customer font packages (demo packages stay tracked)
+storage/fonts/font-*
+
+*.log
+.DS_Store
+Thumbs.db
