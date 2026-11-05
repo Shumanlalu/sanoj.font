@@ -1,6 +1,5 @@
 'use strict';
 
-const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
@@ -8,7 +7,23 @@ const express = require('express');
 const multer = require('multer');
 
 const config = require('./src/config');
-const { db, getSetting, setSetting } = require('./src/database');
+const {
+  initializeDatabase,
+  getSetting,
+  setSetting,
+  getSettings,
+  setSettings,
+  get,
+  all,
+  query,
+  run,
+  withTransaction,
+} = require('./src/database');
+const {
+  uploadFontObject,
+  deleteFontObjects,
+  createFontDownloadUrl,
+} = require('./src/storage');
 const {
   createSessionToken,
   verifyPassword,
@@ -25,7 +40,7 @@ const { buildUpiLink, createUpiQr, paymentNote } = require('./src/upi');
 
 const app = express();
 app.disable('x-powered-by');
-app.set('trust proxy', false);
+app.set('trust proxy', process.env.VERCEL ? 1 : false);
 app.use(securityHeaders);
 app.use(express.json({ limit: '160kb' }));
 
@@ -102,12 +117,12 @@ function serializeFont(font) {
   };
 }
 
-function getOrder(orderId) {
-  return db.prepare('SELECT * FROM orders WHERE id = ?').get(orderId);
+async function getOrder(orderId) {
+  return get('SELECT * FROM orders WHERE id = $1', [orderId]);
 }
 
-function getOrderItems(orderId) {
-  return db.prepare('SELECT * FROM order_items WHERE order_id = ? ORDER BY id ASC').all(orderId);
+async function getOrderItems(orderId) {
+  return all('SELECT * FROM order_items WHERE order_id = $1 ORDER BY id ASC', [orderId]);
 }
 
 function isUuid(value) {
@@ -117,7 +132,19 @@ function isUuid(value) {
 }
 
 async function buildPublicOrder(order) {
-  const items = getOrderItems(order.id).map((item) => ({
+  const [items, settings] = await Promise.all([
+    getOrderItems(order.id),
+    getSettings([
+      'support_email',
+      'support_phone',
+      'instagram',
+      'store_name',
+      'upi_id',
+      'upi_name',
+    ]),
+  ]);
+
+  const mappedItems = items.map((item) => ({
     id: item.id,
     fontId: item.font_id,
     name: item.name,
@@ -140,18 +167,18 @@ async function buildPublicOrder(order) {
     utr: order.utr || null,
     createdAt: order.created_at,
     paidAt: order.paid_at || null,
-    items,
+    items: mappedItems,
     support: {
-      email: getSetting('support_email') || '',
-      phone: getSetting('support_phone') || '',
-      instagram: getSetting('instagram') || '',
-      storeName: getSetting('store_name') || config.STORE_NAME,
+      email: settings.support_email || '',
+      phone: settings.support_phone || '',
+      instagram: settings.instagram || '',
+      storeName: settings.store_name || config.STORE_NAME,
     },
   };
 
   if (order.status !== 'paid') {
-    const upiId = getSetting('upi_id') || '';
-    const upiName = getSetting('upi_name') || getSetting('store_name') || config.STORE_NAME;
+    const upiId = settings.upi_id || '';
+    const upiName = settings.upi_name || settings.store_name || config.STORE_NAME;
     const note = paymentNote(order.id);
     const upiLink = buildUpiLink({
       upiId,
@@ -172,7 +199,7 @@ async function buildPublicOrder(order) {
   return response;
 }
 
-function saveFontFile(file) {
+async function saveFontFile(file) {
   if (!file) return null;
 
   const extension = path.extname(file.originalname || '').toLowerCase();
@@ -201,29 +228,21 @@ function saveFontFile(file) {
     });
   }
 
-  const storedName = `font-${Date.now()}-${crypto.randomBytes(6).toString('hex')}${extension}`;
-  fs.writeFileSync(path.join(config.FONT_STORAGE_DIR, storedName), buffer);
+  const storedName = `fonts/${Date.now()}-${crypto.randomBytes(6).toString('hex')}${extension}`;
+  await uploadFontObject(storedName, buffer);
   return {
     storedName,
-    originalName: path.basename(file.originalname).replace(/[^\w.\- ()]/g, '').slice(0, 120) || `font${extension}`,
+    originalName:
+      path.basename(file.originalname).replace(/[^\w.\- ()]/g, '').slice(0, 120) || `font${extension}`,
   };
 }
 
-function safeDeleteFontFile(fileName) {
+async function safeDeleteFontFile(fileName) {
   if (!fileName) return;
-  const base = path.basename(fileName);
-  const filePath = path.resolve(config.FONT_STORAGE_DIR, base);
-  if (!filePath.startsWith(path.resolve(config.FONT_STORAGE_DIR) + path.sep)) return;
-  if (fs.existsSync(filePath)) {
-    try {
-      fs.unlinkSync(filePath);
-    } catch {
-      // A missing or locked file should not block a database update.
-    }
-  }
+  await deleteFontObjects([fileName]);
 }
 
-function requireFontPayload(req, existing = null) {
+async function requireFontPayload(req, existing = null) {
   const body = req.body || {};
   const name = cleanText(body.name, 80);
   const tagline = cleanText(body.tagline, 160);
@@ -269,9 +288,10 @@ function requireFontPayload(req, existing = null) {
   }
   if (!slug) throw Object.assign(new Error('Could not create a URL slug for this font.'), { status: 400 });
 
-  const duplicate = db
-    .prepare('SELECT id FROM fonts WHERE slug = ? AND id != ?')
-    .get(slug, existing ? existing.id : -1);
+  const duplicate = await get('SELECT id FROM fonts WHERE slug = $1 AND id != $2', [
+    slug,
+    existing ? existing.id : -1,
+  ]);
   if (duplicate) {
     throw Object.assign(new Error('Another font already uses that URL slug.'), { status: 409 });
   }
@@ -295,6 +315,31 @@ function requireFontPayload(req, existing = null) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Database readiness                                                 */
+/* ------------------------------------------------------------------ */
+
+// Runs once per serverless instance (and once locally) before any API call.
+app.use('/api', async (req, res, next) => {
+  try {
+    await initializeDatabase();
+    next();
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Admin sessions need a stable signing key. Block admin routes with a clear
+// error instead of crashing the whole deployment when it is missing.
+app.use('/api/admin', (req, res, next) => {
+  if (config.SESSION_SECRET_MISSING) {
+    return res.status(500).json({
+      error: 'Admin sessions are not configured. Set SESSION_SECRET in the environment.',
+    });
+  }
+  return next();
+});
+
+/* ------------------------------------------------------------------ */
 /* Public API                                                         */
 /* ------------------------------------------------------------------ */
 
@@ -306,27 +351,26 @@ const loginLimiter = createRateLimiter({
   message: 'Too many sign-in attempts. Try again in a few minutes.',
 });
 
-app.get('/api/fonts', (req, res) => {
-  const rows = db
-    .prepare('SELECT * FROM fonts WHERE published = 1 ORDER BY sort_order ASC, id ASC')
-    .all();
+app.get('/api/fonts', async (req, res) => {
+  const rows = await all('SELECT * FROM fonts WHERE published = 1 ORDER BY sort_order ASC, id ASC');
   res.setHeader('Cache-Control', 'public, max-age=60');
   res.json({ fonts: rows.map(serializeFont) });
 });
 
-app.get('/api/store', (req, res) => {
+app.get('/api/store', async (req, res) => {
+  const stored = await getSettings(publicSettingsKeys);
   const settings = {};
-  for (const key of publicSettingsKeys) settings[key] = getSetting(key) || '';
+  for (const key of publicSettingsKeys) settings[key] = stored[key] || '';
   res.setHeader('Cache-Control', 'public, max-age=60');
   res.json({ store: settings });
 });
 
-app.get('/api/health', (req, res) => {
+app.get('/api/health', async (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
   res.json({ ok: true });
 });
 
-app.post('/api/orders', orderLimiter, (req, res) => {
+app.post('/api/orders', orderLimiter, async (req, res) => {
   const body = req.body || {};
   const name = cleanText(body.name, 80);
   const email = cleanText(body.email, 160).toLowerCase();
@@ -343,10 +387,11 @@ app.post('/api/orders', orderLimiter, (req, res) => {
   if (ids.length === 0) return res.status(400).json({ error: 'Your bag is empty.' });
   if (ids.length > 10) return res.status(400).json({ error: 'A maximum of 10 fonts can be ordered at once.' });
 
-  const placeholders = ids.map(() => '?').join(',');
-  const fonts = db
-    .prepare(`SELECT * FROM fonts WHERE published = 1 AND id IN (${placeholders})`)
-    .all(...ids);
+  const placeholders = ids.map((_, index) => `$${index + 1}`).join(',');
+  const fonts = await all(
+    `SELECT * FROM fonts WHERE published = 1 AND id IN (${placeholders})`,
+    ids
+  );
 
   if (fonts.length !== ids.length) {
     return res.status(409).json({ error: 'One or more fonts are no longer available.' });
@@ -356,25 +401,21 @@ app.post('/api/orders', orderLimiter, (req, res) => {
   const orderId = crypto.randomUUID();
   const timestamp = nowIso();
 
-  db.exec('BEGIN');
-  try {
-    db.prepare(`
-      INSERT INTO orders (id, customer_name, email, phone, amount, status, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)
-    `).run(orderId, name, email, phone, amount, timestamp, timestamp);
+  await withTransaction(async (client) => {
+    await client.query(
+      `INSERT INTO orders (id, customer_name, email, phone, amount, status, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, 'pending', $6, $6)`,
+      [orderId, name, email, phone, amount, timestamp]
+    );
 
-    const insertItem = db.prepare(`
-      INSERT INTO order_items (order_id, font_id, name, price, type_class, license)
-      VALUES (?, ?, ?, ?, ?, 'Personal')
-    `);
     for (const font of fonts) {
-      insertItem.run(orderId, font.id, font.name, font.price, font.type_class);
+      await client.query(
+        `INSERT INTO order_items (order_id, font_id, name, price, type_class, license)
+         VALUES ($1, $2, $3, $4, $5, 'Personal')`,
+        [orderId, font.id, font.name, font.price, font.type_class]
+      );
     }
-    db.exec('COMMIT');
-  } catch (error) {
-    db.exec('ROLLBACK');
-    throw error;
-  }
+  });
 
   res.status(201).json({
     orderId,
@@ -384,16 +425,16 @@ app.post('/api/orders', orderLimiter, (req, res) => {
 
 app.get('/api/orders/:id', async (req, res) => {
   if (!isUuid(req.params.id)) return res.status(404).json({ error: 'Order not found.' });
-  const order = getOrder(req.params.id);
+  const order = await getOrder(req.params.id);
   if (!order) return res.status(404).json({ error: 'Order not found.' });
 
   res.setHeader('Cache-Control', 'no-store');
   res.json({ order: await buildPublicOrder(order) });
 });
 
-app.post('/api/orders/:id/utr', utrLimiter, (req, res) => {
+app.post('/api/orders/:id/utr', utrLimiter, async (req, res) => {
   if (!isUuid(req.params.id)) return res.status(404).json({ error: 'Order not found.' });
-  const order = getOrder(req.params.id);
+  const order = await getOrder(req.params.id);
   if (!order) return res.status(404).json({ error: 'Order not found.' });
   if (order.status === 'paid') return res.status(409).json({ error: 'This order is already marked as paid.' });
   if (order.status === 'cancelled') {
@@ -407,11 +448,12 @@ app.post('/api/orders/:id/utr', utrLimiter, (req, res) => {
     });
   }
 
-  db.prepare(`
-    UPDATE orders
-    SET utr = ?, status = 'review', admin_note = NULL, updated_at = ?
-    WHERE id = ?
-  `).run(utr.toUpperCase(), nowIso(), order.id);
+  await run(
+    `UPDATE orders
+     SET utr = $1, status = 'review', admin_note = NULL, updated_at = $2
+     WHERE id = $3`,
+    [utr.toUpperCase(), nowIso(), order.id]
+  );
 
   res.json({
     ok: true,
@@ -420,39 +462,40 @@ app.post('/api/orders/:id/utr', utrLimiter, (req, res) => {
   });
 });
 
-app.get('/api/download/:fontId', (req, res) => {
+app.get('/api/download/:fontId', async (req, res) => {
   const orderId = String(req.query.order || '');
   if (!isUuid(orderId)) return res.status(404).send('Download link is invalid.');
 
-  const order = getOrder(orderId);
+  const order = await getOrder(orderId);
   if (!order || order.status !== 'paid') {
     return res.status(403).send('Downloads unlock once your payment is verified.');
   }
 
   const fontId = asInteger(req.params.fontId, 0);
-  const item = db
-    .prepare('SELECT * FROM order_items WHERE order_id = ? AND font_id = ? LIMIT 1')
-    .get(order.id, fontId);
+  const item = await get(
+    'SELECT * FROM order_items WHERE order_id = $1 AND font_id = $2 LIMIT 1',
+    [order.id, fontId]
+  );
   if (!item) return res.status(404).send('This font is not part of the order.');
 
-  const font = db.prepare('SELECT * FROM fonts WHERE id = ?').get(fontId);
+  const font = await get('SELECT * FROM fonts WHERE id = $1', [fontId]);
   if (!font || !font.file_name) return res.status(404).send('The font file is not available yet.');
 
-  const safeName = path.basename(font.file_name);
-  const filePath = path.resolve(config.FONT_STORAGE_DIR, safeName);
-  if (!filePath.startsWith(path.resolve(config.FONT_STORAGE_DIR) + path.sep) || !fs.existsSync(filePath)) {
-    return res.status(404).send('The font file could not be found. Please contact the studio.');
-  }
+  await run('UPDATE fonts SET downloads = downloads + 1 WHERE id = $1', [font.id]);
 
-  db.prepare('UPDATE fonts SET downloads = downloads + 1 WHERE id = ?').run(font.id);
-  res.download(filePath, font.file_original || `${font.slug}${path.extname(safeName)}`);
+  const extension = path.extname(font.file_name) || '';
+  const downloadName = font.file_original || `${font.slug}${extension}`;
+  const downloadUrl = await createFontDownloadUrl(font.file_name, downloadName);
+
+  res.setHeader('Cache-Control', 'no-store');
+  res.redirect(302, downloadUrl);
 });
 
 /* ------------------------------------------------------------------ */
 /* Admin authentication                                               */
 /* ------------------------------------------------------------------ */
 
-app.get('/api/admin/me', (req, res) => {
+app.get('/api/admin/me', async (req, res) => {
   const session = getAdminSession(req);
   if (!session || session.username !== config.ADMIN_USER) {
     return res.json({ authenticated: false });
@@ -460,12 +503,12 @@ app.get('/api/admin/me', (req, res) => {
   return res.json({
     authenticated: true,
     username: session.username,
-    storeName: getSetting('store_name') || config.STORE_NAME,
+    storeName: (await getSetting('store_name')) || config.STORE_NAME,
     expiresAt: session.expiresAt,
   });
 });
 
-app.post('/api/admin/login', loginLimiter, (req, res) => {
+app.post('/api/admin/login', loginLimiter, async (req, res) => {
   const username = cleanText(req.body?.username, 80);
   const password = typeof req.body?.password === 'string' ? req.body.password : '';
 
@@ -474,7 +517,7 @@ app.post('/api/admin/login', loginLimiter, (req, res) => {
   }
 
   const validUser = username === config.ADMIN_USER;
-  const storedHash = getSetting('admin_password_hash');
+  const storedHash = await getSetting('admin_password_hash');
   const validPassword = verifyPassword(password, storedHash);
 
   if (!validUser || !validPassword) {
@@ -508,37 +551,49 @@ app.post('/api/admin/logout', adminAuth, requireAdminHeader, (req, res) => {
 /* Protected admin API                                                */
 /* ------------------------------------------------------------------ */
 
+const maxFontUploadMb = Math.min(Math.max(config.MAX_FONT_UPLOAD_MB, 1), 10);
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 10 * 1024 * 1024, files: 1 },
+  limits: { fileSize: maxFontUploadMb * 1024 * 1024, files: 1 },
 });
 
 app.use('/api/admin', adminAuth, requireAdminHeader);
 
-app.get('/api/admin/overview', (req, res) => {
-  const revenue = db
-    .prepare("SELECT COALESCE(SUM(amount), 0) AS value FROM orders WHERE status = 'paid'")
-    .get().value;
-  const orderCount = db.prepare('SELECT COUNT(*) AS value FROM orders').get().value;
-  const reviewCount = db.prepare("SELECT COUNT(*) AS value FROM orders WHERE status = 'review'").get().value;
-  const publishedFonts = db.prepare('SELECT COUNT(*) AS value FROM fonts WHERE published = 1').get().value;
+app.get('/api/admin/overview', async (req, res) => {
+  const [revenue, orderCount, reviewCount, publishedFonts, last7, previous7, dailyRows, recentOrders, topFonts] =
+    await Promise.all([
+      get("SELECT COALESCE(SUM(amount), 0)::int AS value FROM orders WHERE status = 'paid'"),
+      get('SELECT COUNT(*)::int AS value FROM orders'),
+      get("SELECT COUNT(*)::int AS value FROM orders WHERE status = 'review'"),
+      get('SELECT COUNT(*)::int AS value FROM fonts WHERE published = 1'),
+      get(
+        "SELECT COALESCE(SUM(amount), 0)::int AS value FROM orders WHERE status = 'paid' AND paid_at::timestamptz >= now() - interval '7 days'"
+      ),
+      get(
+        "SELECT COALESCE(SUM(amount), 0)::int AS value FROM orders WHERE status = 'paid' AND paid_at::timestamptz >= now() - interval '14 days' AND paid_at::timestamptz < now() - interval '7 days'"
+      ),
+      all(`
+        SELECT LEFT(paid_at, 10) AS day, SUM(amount)::int AS revenue, COUNT(*)::int AS orders
+        FROM orders
+        WHERE status = 'paid' AND paid_at::timestamptz >= now() - interval '13 days'
+        GROUP BY LEFT(paid_at, 10)
+        ORDER BY day ASC
+      `),
+      all(`
+        SELECT o.*, (SELECT COUNT(*)::int FROM order_items i WHERE i.order_id = o.id) AS item_count
+        FROM orders o ORDER BY o.created_at DESC LIMIT 6
+      `),
+      all(`
+        SELECT i.name, i.type_class, COUNT(*)::int AS sold, SUM(i.price)::int AS revenue
+        FROM order_items i
+        JOIN orders o ON o.id = i.order_id
+        WHERE o.status = 'paid'
+        GROUP BY i.name, i.type_class
+        ORDER BY sold DESC, revenue DESC
+        LIMIT 5
+      `),
+    ]);
 
-  const last7 = db
-    .prepare("SELECT COALESCE(SUM(amount), 0) AS value FROM orders WHERE status = 'paid' AND datetime(paid_at) >= datetime('now', '-7 days')")
-    .get().value;
-  const previous7 = db
-    .prepare("SELECT COALESCE(SUM(amount), 0) AS value FROM orders WHERE status = 'paid' AND datetime(paid_at) >= datetime('now', '-14 days') AND datetime(paid_at) < datetime('now', '-7 days')")
-    .get().value;
-
-  const dailyRows = db
-    .prepare(`
-      SELECT date(paid_at) AS day, SUM(amount) AS revenue, COUNT(*) AS orders
-      FROM orders
-      WHERE status = 'paid' AND datetime(paid_at) >= datetime('now', '-13 days')
-      GROUP BY date(paid_at)
-      ORDER BY day ASC
-    `)
-    .all();
   const dailyMap = new Map(dailyRows.map((row) => [row.day, row]));
   const daily = [];
   for (let offset = 13; offset >= 0; offset -= 1) {
@@ -549,13 +604,16 @@ app.get('/api/admin/overview', (req, res) => {
     daily.push({ day: key, revenue: match?.revenue || 0, orders: match?.orders || 0 });
   }
 
-  const recentOrders = db
-    .prepare(`
-      SELECT o.*, (SELECT COUNT(*) FROM order_items i WHERE i.order_id = o.id) AS item_count
-      FROM orders o ORDER BY o.created_at DESC LIMIT 6
-    `)
-    .all()
-    .map((order) => ({
+  res.json({
+    stats: {
+      revenue: revenue.value,
+      orderCount: orderCount.value,
+      reviewCount: reviewCount.value,
+      publishedFonts: publishedFonts.value,
+      last7: { value: last7.value, previous: previous7.value },
+    },
+    daily,
+    recentOrders: recentOrders.map((order) => ({
       id: order.id,
       customerName: order.customer_name,
       email: order.email,
@@ -563,186 +621,171 @@ app.get('/api/admin/overview', (req, res) => {
       status: order.status,
       createdAt: order.created_at,
       itemCount: order.item_count,
-    }));
-
-  const topFonts = db
-    .prepare(`
-      SELECT i.name, i.type_class, COUNT(*) AS sold, SUM(i.price) AS revenue
-      FROM order_items i
-      JOIN orders o ON o.id = i.order_id
-      WHERE o.status = 'paid'
-      GROUP BY i.name, i.type_class
-      ORDER BY sold DESC, revenue DESC
-      LIMIT 5
-    `)
-    .all();
-
-  res.json({
-    stats: {
-      revenue,
-      orderCount,
-      reviewCount,
-      publishedFonts,
-      last7: { value: last7, previous: previous7 },
-    },
-    daily,
-    recentOrders,
+    })),
     topFonts,
   });
 });
 
-app.get('/api/admin/fonts', (req, res) => {
-  const rows = db.prepare('SELECT * FROM fonts ORDER BY sort_order ASC, id ASC').all();
+app.get('/api/admin/fonts', async (req, res) => {
+  const rows = await all('SELECT * FROM fonts ORDER BY sort_order ASC, id ASC');
   res.json({ fonts: rows.map((font) => ({ ...serializeFont(font), hasFile: Boolean(font.file_name) })) });
 });
 
-app.post('/api/admin/fonts', upload.single('file'), (req, res) => {
-  const payload = requireFontPayload(req);
-  const uploaded = saveFontFile(req.file);
+app.post('/api/admin/fonts', upload.single('file'), async (req, res) => {
+  const payload = await requireFontPayload(req);
+  const uploaded = await saveFontFile(req.file);
   const timestamp = nowIso();
 
   try {
-    const result = db.prepare(`
-      INSERT INTO fonts (
+    const { rows } = await query(
+      `INSERT INTO fonts (
         slug, name, category, styles, glyphs, tagline, description, price,
         type_class, accent, background, badge, published, sort_order,
         file_name, file_original, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      payload.slug,
-      payload.name,
-      payload.category,
-      payload.styles,
-      payload.glyphs,
-      payload.tagline,
-      payload.description,
-      payload.price,
-      payload.typeClass,
-      payload.accent,
-      payload.background,
-      payload.badge,
-      payload.published,
-      payload.sortOrder,
-      uploaded?.storedName || null,
-      uploaded?.originalName || null,
-      timestamp,
-      timestamp
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+      RETURNING *`,
+      [
+        payload.slug,
+        payload.name,
+        payload.category,
+        payload.styles,
+        payload.glyphs,
+        payload.tagline,
+        payload.description,
+        payload.price,
+        payload.typeClass,
+        payload.accent,
+        payload.background,
+        payload.badge,
+        payload.published,
+        payload.sortOrder,
+        uploaded?.storedName || null,
+        uploaded?.originalName || null,
+        timestamp,
+        timestamp,
+      ]
     );
 
-    const font = db.prepare('SELECT * FROM fonts WHERE id = ?').get(result.lastInsertRowid);
+    const font = rows[0];
     res.status(201).json({ font: { ...serializeFont(font), hasFile: Boolean(font.file_name) } });
   } catch (error) {
-    if (uploaded) safeDeleteFontFile(uploaded.storedName);
+    if (uploaded) await safeDeleteFontFile(uploaded.storedName);
     throw error;
   }
 });
 
-app.post('/api/admin/fonts/:id', upload.single('file'), (req, res) => {
+app.post('/api/admin/fonts/:id', upload.single('file'), async (req, res) => {
   const fontId = asInteger(req.params.id, 0);
-  const existing = db.prepare('SELECT * FROM fonts WHERE id = ?').get(fontId);
+  const existing = await get('SELECT * FROM fonts WHERE id = $1', [fontId]);
   if (!existing) return res.status(404).json({ error: 'Font not found.' });
 
-  const payload = requireFontPayload(req, existing);
-  const uploaded = saveFontFile(req.file);
+  const payload = await requireFontPayload(req, existing);
+  const uploaded = await saveFontFile(req.file);
   const timestamp = nowIso();
 
   try {
-    db.prepare(`
-      UPDATE fonts SET
-        slug = ?, name = ?, category = ?, styles = ?, glyphs = ?, tagline = ?,
-        description = ?, price = ?, type_class = ?, accent = ?, background = ?,
-        badge = ?, published = ?, sort_order = ?, file_name = ?, file_original = ?,
-        updated_at = ?
-      WHERE id = ?
-    `).run(
-      payload.slug,
-      payload.name,
-      payload.category,
-      payload.styles,
-      payload.glyphs,
-      payload.tagline,
-      payload.description,
-      payload.price,
-      payload.typeClass,
-      payload.accent,
-      payload.background,
-      payload.badge,
-      payload.published,
-      payload.sortOrder,
-      uploaded?.storedName || existing.file_name,
-      uploaded?.originalName || existing.file_original,
-      timestamp,
-      fontId
+    const { rows } = await query(
+      `UPDATE fonts SET
+        slug = $1, name = $2, category = $3, styles = $4, glyphs = $5, tagline = $6,
+        description = $7, price = $8, type_class = $9, accent = $10, background = $11,
+        badge = $12, published = $13, sort_order = $14, file_name = $15, file_original = $16,
+        updated_at = $17
+       WHERE id = $18
+       RETURNING *`,
+      [
+        payload.slug,
+        payload.name,
+        payload.category,
+        payload.styles,
+        payload.glyphs,
+        payload.tagline,
+        payload.description,
+        payload.price,
+        payload.typeClass,
+        payload.accent,
+        payload.background,
+        payload.badge,
+        payload.published,
+        payload.sortOrder,
+        uploaded?.storedName || existing.file_name,
+        uploaded?.originalName || existing.file_original,
+        timestamp,
+        fontId,
+      ]
     );
 
     if (uploaded && existing.file_name && existing.file_name !== uploaded.storedName) {
-      safeDeleteFontFile(existing.file_name);
+      await safeDeleteFontFile(existing.file_name);
     }
 
-    const font = db.prepare('SELECT * FROM fonts WHERE id = ?').get(fontId);
+    const font = rows[0];
     res.json({ font: { ...serializeFont(font), hasFile: Boolean(font.file_name) } });
   } catch (error) {
-    if (uploaded) safeDeleteFontFile(uploaded.storedName);
+    if (uploaded) await safeDeleteFontFile(uploaded.storedName);
     throw error;
   }
 });
 
-app.patch('/api/admin/fonts/:id/publish', (req, res) => {
+app.patch('/api/admin/fonts/:id/publish', async (req, res) => {
   const fontId = asInteger(req.params.id, 0);
-  const existing = db.prepare('SELECT * FROM fonts WHERE id = ?').get(fontId);
+  const existing = await get('SELECT * FROM fonts WHERE id = $1', [fontId]);
   if (!existing) return res.status(404).json({ error: 'Font not found.' });
 
   const nextPublished = req.body?.published === true || req.body?.published === 'true';
-  db.prepare('UPDATE fonts SET published = ?, updated_at = ? WHERE id = ?').run(
-    nextPublished ? 1 : 0,
-    nowIso(),
-    fontId
+  const { rows } = await query(
+    'UPDATE fonts SET published = $1, updated_at = $2 WHERE id = $3 RETURNING *',
+    [nextPublished ? 1 : 0, nowIso(), fontId]
   );
 
-  const font = db.prepare('SELECT * FROM fonts WHERE id = ?').get(fontId);
+  const font = rows[0];
   res.json({ font: { ...serializeFont(font), hasFile: Boolean(font.file_name) } });
 });
 
-app.delete('/api/admin/fonts/:id', (req, res) => {
+app.delete('/api/admin/fonts/:id', async (req, res) => {
   const fontId = asInteger(req.params.id, 0);
-  const existing = db.prepare('SELECT * FROM fonts WHERE id = ?').get(fontId);
+  const existing = await get('SELECT * FROM fonts WHERE id = $1', [fontId]);
   if (!existing) return res.status(404).json({ error: 'Font not found.' });
 
-  db.prepare('DELETE FROM fonts WHERE id = ?').run(fontId);
+  await run('DELETE FROM fonts WHERE id = $1', [fontId]);
 
   if (existing.file_name) {
-    const otherReferences = db.prepare('SELECT COUNT(*) AS count FROM fonts WHERE file_name = ?').get(existing.file_name).count;
-    if (!otherReferences) safeDeleteFontFile(existing.file_name);
+    const otherReferences = await get(
+      'SELECT COUNT(*)::int AS count FROM fonts WHERE file_name = $1',
+      [existing.file_name]
+    );
+    if (!otherReferences.count) await safeDeleteFontFile(existing.file_name);
   }
 
   res.json({ ok: true });
 });
 
-app.get('/api/admin/orders', (req, res) => {
+app.get('/api/admin/orders', async (req, res) => {
   const status = cleanText(req.query.status, 20);
-  const query = cleanText(req.query.q, 80);
+  const search = cleanText(req.query.q, 80);
   const clauses = [];
   const params = [];
 
   if (status && status !== 'all' && allowedStatuses.has(status)) {
-    clauses.push('o.status = ?');
     params.push(status);
+    clauses.push(`o.status = $${params.length}`);
   }
-  if (query) {
-    clauses.push('(o.customer_name LIKE ? OR o.email LIKE ? OR o.id LIKE ? OR o.utr LIKE ?)');
-    const term = `%${query}%`;
+  if (search) {
+    const term = `%${search}%`;
+    const base = params.length;
+    clauses.push(
+      `(o.customer_name ILIKE $${base + 1} OR o.email ILIKE $${base + 2} OR o.id ILIKE $${base + 3} OR COALESCE(o.utr, '') ILIKE $${base + 4})`
+    );
     params.push(term, term, term, term);
   }
 
   const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
-  const rows = db
-    .prepare(`
-      SELECT o.*, (SELECT COUNT(*) FROM order_items i WHERE i.order_id = o.id) AS item_count
-      FROM orders o ${where}
-      ORDER BY o.created_at DESC
-      LIMIT 250
-    `)
-    .all(...params);
+  const rows = await all(
+    `SELECT o.*, (SELECT COUNT(*)::int FROM order_items i WHERE i.order_id = o.id) AS item_count
+     FROM orders o ${where}
+     ORDER BY o.created_at DESC
+     LIMIT 250`,
+    params
+  );
 
   res.json({
     orders: rows.map((order) => ({
@@ -760,12 +803,12 @@ app.get('/api/admin/orders', (req, res) => {
   });
 });
 
-app.get('/api/admin/orders/:id', (req, res) => {
+app.get('/api/admin/orders/:id', async (req, res) => {
   if (!isUuid(req.params.id)) return res.status(404).json({ error: 'Order not found.' });
-  const order = getOrder(req.params.id);
+  const order = await getOrder(req.params.id);
   if (!order) return res.status(404).json({ error: 'Order not found.' });
 
-  const items = getOrderItems(order.id).map((item) => ({
+  const items = (await getOrderItems(order.id)).map((item) => ({
     id: item.id,
     fontId: item.font_id,
     name: item.name,
@@ -783,9 +826,9 @@ app.get('/api/admin/orders/:id', (req, res) => {
   });
 });
 
-app.patch('/api/admin/orders/:id', (req, res) => {
+app.patch('/api/admin/orders/:id', async (req, res) => {
   if (!isUuid(req.params.id)) return res.status(404).json({ error: 'Order not found.' });
-  const order = getOrder(req.params.id);
+  const order = await getOrder(req.params.id);
   if (!order) return res.status(404).json({ error: 'Order not found.' });
 
   const status = cleanText(req.body?.status, 20);
@@ -797,39 +840,41 @@ app.patch('/api/admin/orders/:id', (req, res) => {
   }
 
   const paidAt = status === 'paid' ? order.paid_at || nowIso() : null;
-  db.prepare(`
-    UPDATE orders SET status = ?, admin_note = ?, paid_at = ?, updated_at = ?
-    WHERE id = ?
-  `).run(status, adminNote || null, paidAt, nowIso(), order.id);
+  await run(
+    `UPDATE orders SET status = $1, admin_note = $2, paid_at = $3, updated_at = $4
+     WHERE id = $5`,
+    [status, adminNote || null, paidAt, nowIso(), order.id]
+  );
 
   res.json({ ok: true, status });
 });
 
-app.get('/api/admin/settings', (req, res) => {
+app.get('/api/admin/settings', async (req, res) => {
+  const keys = [...new Set([...publicSettingsKeys, 'upi_id', 'upi_name', 'store_name', 'store_tagline'])];
+  const stored = await getSettings(keys);
   const settings = {};
-  for (const key of [...publicSettingsKeys, 'upi_id', 'upi_name', 'store_name', 'store_tagline']) {
-    settings[key] = getSetting(key) || '';
-  }
+  for (const key of keys) settings[key] = stored[key] || '';
   res.json({ settings });
 });
 
-app.put('/api/admin/settings', (req, res) => {
+app.put('/api/admin/settings', async (req, res) => {
   const body = req.body || {};
   const errors = [];
   const has = (key) => Object.prototype.hasOwnProperty.call(body, key);
 
-  // Read the current values first so partial updates keep everything else intact.
-  const current = {
-    upi_id: getSetting('upi_id') || '',
-    upi_name: getSetting('upi_name') || '',
-    support_email: getSetting('support_email') || '',
-    support_phone: getSetting('support_phone') || '',
-    store_name: getSetting('store_name') || '',
-    store_tagline: getSetting('store_tagline') || '',
-    instagram: getSetting('instagram') || '',
-    announcement: getSetting('announcement') || '',
-    license_note: getSetting('license_note') || '',
-  };
+  const keys = [
+    'upi_id',
+    'upi_name',
+    'support_email',
+    'support_phone',
+    'store_name',
+    'store_tagline',
+    'instagram',
+    'announcement',
+    'license_note',
+  ];
+  const stored = await getSettings(keys);
+  const current = Object.fromEntries(keys.map((key) => [key, stored[key] || '']));
 
   const values = {
     upi_id: has('upi_id') ? cleanText(body.upi_id, 120) : current.upi_id,
@@ -855,15 +900,15 @@ app.put('/api/admin/settings', (req, res) => {
 
   if (errors.length) return res.status(400).json({ error: errors[0], errors });
 
-  for (const [key, value] of Object.entries(values)) setSetting(key, value);
+  await setSettings(values);
   res.json({ ok: true, settings: values });
 });
 
-app.post('/api/admin/password', (req, res) => {
+app.post('/api/admin/password', async (req, res) => {
   const currentPassword = typeof req.body?.currentPassword === 'string' ? req.body.currentPassword : '';
   const newPassword = typeof req.body?.newPassword === 'string' ? req.body.newPassword : '';
 
-  if (!verifyPassword(currentPassword, getSetting('admin_password_hash'))) {
+  if (!verifyPassword(currentPassword, await getSetting('admin_password_hash'))) {
     return res.status(401).json({ error: 'Your current password is not correct.' });
   }
   if (newPassword.length < 10) {
@@ -873,7 +918,7 @@ app.post('/api/admin/password', (req, res) => {
     return res.status(400).json({ error: 'Include at least one letter and one number in the new password.' });
   }
 
-  setSetting('admin_password_hash', hashPassword(newPassword));
+  await setSetting('admin_password_hash', hashPassword(newPassword));
   res.json({ ok: true });
 });
 
@@ -897,7 +942,15 @@ app.get('/checkout', (req, res) => res.sendFile(path.join(config.PUBLIC_DIR, 'ch
 
 app.use('/api', (req, res) => res.status(404).json({ error: 'API route not found.' }));
 app.use((req, res) => {
-  res.status(404).sendFile(path.join(config.PUBLIC_DIR, '404.html'));
+  res.status(404).sendFile(path.join(config.PUBLIC_DIR, '404.html'), (error) => {
+    if (!error || res.headersSent) return;
+    res
+      .status(404)
+      .type('html')
+      .send(
+        '<!doctype html><html lang="en"><meta charset="utf-8"><title>Page not found — Sanoj Type Foundry</title><body style="font-family:system-ui;padding:10vh;background:#111;color:#eee"><h1>404</h1><p>That page could not be found.</p><p><a style="color:#d8ff3e" href="/">Return to the foundry</a></p></body></html>'
+      );
+  });
 });
 
 app.use((error, req, res, next) => {
@@ -905,7 +958,7 @@ app.use((error, req, res, next) => {
   if (error instanceof multer.MulterError) {
     const message =
       error.code === 'LIMIT_FILE_SIZE'
-        ? 'The font file is too large. Maximum size is 10 MB.'
+        ? `The font file is too large. Maximum size is ${maxFontUploadMb} MB.`
         : 'The upload could not be processed.';
     return res.status(400).json({ error: message });
   }
@@ -919,6 +972,10 @@ app.use((error, req, res, next) => {
   });
 });
 
+/* ------------------------------------------------------------------ */
+/* Local server / Vercel export                                       */
+/* ------------------------------------------------------------------ */
+
 function localNetworkUrls() {
   const urls = [];
   for (const entries of Object.values(os.networkInterfaces())) {
@@ -931,43 +988,58 @@ function localNetworkUrls() {
   return urls;
 }
 
-const server = app.listen(config.PORT, config.HOST, () => {
-  console.log('');
-  console.log('  SANOJ TYPE FOUNDRY');
-  console.log(`  Site       http://localhost:${config.PORT}`);
-  console.log(`  Studio     http://localhost:${config.PORT}/admin`);
-  for (const url of localNetworkUrls()) {
-    console.log(`  On network ${url}`);
+async function startLocalServer() {
+  if (config.SESSION_SECRET_MISSING) {
+    throw new Error(
+      'SESSION_SECRET is required in production. Add a long random value to .env or the environment.'
+    );
   }
-  console.log(`  Database   ${path.relative(config.ROOT, require('./src/database').databasePath)}`);
-  console.log('');
-  console.log('  Keep this window open while using the site.');
-  console.log('');
-});
+  await initializeDatabase();
 
-server.on('error', (error) => {
-  if (error.code === 'EADDRINUSE') {
-    console.error(`\n  Port ${config.PORT} is already in use.`);
-    console.error('  The site may already be running in another window.');
-    console.error(`  Try opening http://localhost:${config.PORT} instead.\n`);
-  } else {
-    console.error('\n  The server could not start:', error.message, '\n');
-  }
-  process.exitCode = 1;
-});
-
-function shutdown(signal) {
-  console.log(`\n${signal} received. Shutting down…`);
-  server.close(() => {
-    try {
-      db.close();
-    } catch {
-      // Ignore shutdown errors from SQLite.
+  const server = app.listen(config.PORT, config.HOST, () => {
+    console.log('');
+    console.log('  SANOJ TYPE FOUNDRY');
+    console.log(`  Site       http://localhost:${config.PORT}`);
+    console.log(`  Studio     http://localhost:${config.PORT}/admin`);
+    for (const url of localNetworkUrls()) {
+      console.log(`  On network ${url}`);
     }
-    process.exit(0);
+    console.log(`  Database   PostgreSQL (Supabase)`);
+    console.log(`  Storage    Supabase bucket "${config.SUPABASE_BUCKET}"`);
+    console.log('');
+    console.log('  Keep this window open while using the site.');
+    console.log('');
   });
-  setTimeout(() => process.exit(1), 5000).unref();
+
+  server.on('error', (error) => {
+    if (error.code === 'EADDRINUSE') {
+      console.error(`\n  Port ${config.PORT} is already in use.`);
+      console.error('  The site may already be running in another window.');
+      console.error(`  Try opening http://localhost:${config.PORT} instead.\n`);
+    } else {
+      console.error('\n  The server could not start:', error.message, '\n');
+    }
+    process.exitCode = 1;
+  });
+
+  function shutdown(signal) {
+    console.log(`\n${signal} received. Shutting down…`);
+    server.close(() => {
+      process.exit(0);
+    });
+    setTimeout(() => process.exit(1), 5000).unref();
+  }
+
+  process.on('SIGINT', () => shutdown('SIGINT'));
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
 }
 
-process.on('SIGINT', () => shutdown('SIGINT'));
-process.on('SIGTERM', () => shutdown('SIGTERM'));
+if (require.main === module) {
+  startLocalServer().catch((error) => {
+    console.error('\n  The server could not start.');
+    console.error(' ', error.message, '\n');
+    process.exitCode = 1;
+  });
+}
+
+module.exports = app;

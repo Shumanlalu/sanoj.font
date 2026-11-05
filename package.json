@@ -7,24 +7,29 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "check": "node --check server.js && node --check public/assets/js/site.js && node --check public/assets/js/checkout.js && node --check public/assets/js/admin.js"
+    "setup:supabase": "node scripts/setup-supabase.js",
+    "check": "node --check server.js && node --check src/config.js && node --check src/database.js && node --check src/storage.js && node --check src/security.js && node --check src/middleware.js && node --check src/upi.js && node --check scripts/setup-supabase.js && node --check public/assets/js/site.js && node --check public/assets/js/checkout.js && node --check public/assets/js/admin.js"
   },
   "keywords": [
     "type-foundry",
     "fonts",
     "upi",
     "express",
-    "sqlite"
+    "supabase",
+    "postgres",
+    "vercel"
   ],
   "author": "Sanoj Type Foundry",
   "license": "UNLICENSED",
   "type": "commonjs",
   "engines": {
-    "node": ">=22.5"
+    "node": "22.x"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.47.10",
     "express": "^5.3.0",
     "multer": "^2.5.0",
+    "pg": "^8.13.1",
     "qrcode": "^1.5.4"
   }
 }

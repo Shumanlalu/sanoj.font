@@ -1,7 +1,10 @@
 node_modules/
 .env
+.env.local
+.env*.local
+.vercel/
 
-# Local database, WAL files and the generated session secret
+# Local database, WAL files and the generated session secret (legacy SQLite)
 data/
 
 # Uploaded customer font packages (demo packages stay tracked)
